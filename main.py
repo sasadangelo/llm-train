@@ -1,6 +1,7 @@
-from transformers import LlamaTokenizer, LlamaForCausalLM, Trainer, TrainingArguments, DataCollatorForLanguageModeling
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, DataCollatorForLanguageModeling
 from datasets import load_dataset
 import torch
+from trl import SFTTrainer
 
 # Function to concatenate the "system", "user", and "assistant" fields into a single text
 def concatenate_fields(examples):
@@ -14,45 +15,52 @@ def concatenate_fields(examples):
 def tokenize_function(examples):
     return tokenizer(examples['text'], padding="max_length", truncation=True)
 
+model_name="instructlab/merlinite-7b-lab"
 # Verifica la disponibilità della GPU MPS
-device = "mps" if torch.backends.mps.is_available() else "cpu"
-print(f"Using device: {device}")
+if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+    device = "mps"
+    device = torch.device(device)
+print(f"* Using device: {device}")
 
-# Prepare the tokenizer for the input model
-tokenizer = LlamaTokenizer.from_pretrained('instructlab/merlinite-7b-lab')
-# Load the model in input. If the models doesn't exist locally it is downloaded
-model = LlamaForCausalLM.from_pretrained('instructlab/merlinite-7b-lab')
+# Prepare the tokenizer for the input model. AutoTokenizer will load the correct tokenizer for the input model.
+print(f"* Load the tokenizer for {model_name}.")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"
+# Load the model in input. If the models doesn't exist locally it is downloaded. AutoModelForCausalLM will load the correct model
+# for the input model name.
+print(f"* Load the model for {model_name}.")
+model = AutoModelForCausalLM.from_pretrained(model_name)
 
 # Move model on the GPU if available
-model.to(device)
+print(f"* Move the model {model_name} to the {device} device.")
+if model.device != device:
+    model.to(device)
 
 # Load the dataset
-dataset_path = '/Users/sasadangelo/github.com/sasadangelo/llm-train/train_merlinite_7b.jsonl'
+dataset_path = 'train_merlinite_7b.jsonl'
+print(f"* Load the training dataset {dataset_path}.")
 dataset = load_dataset("json", data_files=dataset_path)
 
-# Apply the function to concatenate the fields
+# Prepare the input dataset in the following way:
+# - create a column text with the concatenation of system, user, assistant columns.
+# - tokenize the text column
+# - remove the system, user, assistant columns
+print(f"* Tokenize the input dataset.")
 dataset = dataset.map(concatenate_fields, batched=True)
-
-# Visualizza le prime righe del dataset concatenato
-#print(dataset['train'].head())
-
-#for i in range(dataset['train'].num_rows):
-#    print(dataset['train'][i])
-
-# Tokenize the concatenated text
 tokenized_datasets = dataset.map(tokenize_function, batched=True)
 
-# Remove the original text columns: "system", "user", "assistant" and the temporary "text"
-tokenized_datasets = tokenized_datasets.remove_columns(["system", "user", "assistant", "text"])
+# Convert the tokenized dataset in PyTorch format.
+print(f"* Convert the dataset in PyTorch format.")
 tokenized_datasets.set_format("torch")
 
 # Assuming the dataset has a "train" split
 train_dataset = tokenized_datasets["train"]
 
 # Define training arguments
+print(f"* Prepare for the training of the {model_name} model.")
 training_args = TrainingArguments(
     output_dir="./results",           # Directory di output per i modelli e i log
-    use_mps_device=True,
     eval_strategy="epoch",            # Strategia di valutazione (ad ogni epoca)
     learning_rate=2e-5,               # Tasso di apprendimento
     per_device_train_batch_size=4,    # Batch size per dispositivo durante l'addestramento
@@ -67,8 +75,8 @@ training_args = TrainingArguments(
 # Initialize the DataCollator
 data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
-# Initialize the Trainer
-trainer = Trainer(
+# Initialize the SFTTrainer
+trainer = SFTTrainer(
     model=model,                        # Modello da addestrare
     args=training_args,                 # Argomenti di addestramento
     train_dataset=train_dataset,        # Dataset di addestramento
@@ -81,4 +89,5 @@ trainer = Trainer(
 )
 
 # Start training
+print(f"* Train the {model_name} model.")
 trainer.train()
