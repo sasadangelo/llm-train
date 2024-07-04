@@ -1,8 +1,7 @@
 import sys
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, DataCollatorForLanguageModeling
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, DataCollatorForLanguageModeling, Trainer
 from datasets import load_dataset, Dataset
 import torch
-from trl import SFTTrainer
 
 #import os
 #os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
@@ -87,12 +86,12 @@ training_args = TrainingArguments(
 data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
 # Initialize the SFTTrainer
-trainer = SFTTrainer(
-    model=model,                        # Modello da addestrare
-    args=training_args,                 # Argomenti di addestramento
-    train_dataset=train_dataset,        # Dataset di addestramento
-    tokenizer=tokenizer,                # Tokenizer
-    data_collator=data_collator         # DataCollator per il padding
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    tokenizer=tokenizer,
+    data_collator=data_collator
 )
 
 # Start training
