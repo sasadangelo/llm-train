@@ -1,7 +1,11 @@
+import sys
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, DataCollatorForLanguageModeling
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 import torch
 from trl import SFTTrainer
+
+#import os
+#os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
 # Function to concatenate the "system", "user", and "assistant" fields into a single text
 def concatenate_fields(examples):
@@ -12,15 +16,26 @@ def concatenate_fields(examples):
     return {"text": concatenated_examples}
 
 # Tokenize the concatenated text
-def tokenize_function(examples):
-    return tokenizer(examples['text'], padding="max_length", truncation=True)
+def tokenize_function(examples, max_length=512):
+    tokens = tokenizer(examples['text'], padding="max_length", truncation=True, max_length=max_length)
+    return tokens
+
+# Function to move the batch to the specified device
+#def collate_fn(batch, device):
+#    for k, v in batch.items():
+#        batch[k] = v.to(device)
+#    return batch
 
 model_name="instructlab/merlinite-7b-lab"
 # Verifica la disponibilità della GPU MPS
+device = "cpu"
 if torch.backends.mps.is_available() and torch.backends.mps.is_built():
     device = "mps"
-    device = torch.device(device)
+torch_device = torch.device(device)
 print(f"* Using device: {device}")
+
+print(f"* Set the default device for PyTorch to {torch_device}")
+torch.set_default_device(torch_device)
 
 # Prepare the tokenizer for the input model. AutoTokenizer will load the correct tokenizer for the input model.
 print(f"* Load the tokenizer for {model_name}.")
@@ -29,13 +44,9 @@ tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 # Load the model in input. If the models doesn't exist locally it is downloaded. AutoModelForCausalLM will load the correct model
 # for the input model name.
-print(f"* Load the model for {model_name}.")
-model = AutoModelForCausalLM.from_pretrained(model_name)
-
-# Move model on the GPU if available
-print(f"* Move the model {model_name} to the {device} device.")
-if model.device != device:
-    model.to(device)
+print(f"* Load the model for {model_name} to the {torch_device} device.")
+model = AutoModelForCausalLM.from_pretrained(model_name, device_map=torch_device, trust_remote_code=True)
+print(f"Model is on the device: {next(model.parameters()).device}")
 
 # Load the dataset
 dataset_path = 'train_merlinite_7b.jsonl'
@@ -48,9 +59,8 @@ dataset = load_dataset("json", data_files=dataset_path)
 # - remove the system, user, assistant columns
 print(f"* Tokenize the input dataset.")
 dataset = dataset.map(concatenate_fields, batched=True)
-tokenized_datasets = dataset.map(tokenize_function, batched=True)
-
-# Convert the tokenized dataset in PyTorch format.
+tokenized_datasets = dataset.map(lambda examples: tokenize_function(examples, 512), batched=True)
+tokenized_datasets = tokenized_datasets.remove_columns(["system", "user", "assistant", "text"])
 print(f"* Convert the dataset in PyTorch format.")
 tokenized_datasets.set_format("torch")
 
@@ -70,6 +80,7 @@ training_args = TrainingArguments(
     save_total_limit=2,               # Numero massimo di checkpoint da conservare
     save_steps=10_000,                # Frequenza di salvataggio dei checkpoint
     logging_dir='./logs',             # Directory per i log
+    use_mps_device=True,
 )
 
 # Initialize the DataCollator
@@ -82,10 +93,6 @@ trainer = SFTTrainer(
     train_dataset=train_dataset,        # Dataset di addestramento
     tokenizer=tokenizer,                # Tokenizer
     data_collator=data_collator         # DataCollator per il padding
-    # Sposta automaticamente i batch di input sul dispositivo appropriato
-    #data_collator=lambda data: {k: torch.stack(v).to(device) if isinstance(v, list) else v.to(device) for k, v in data.items()}
-    #                          if isinstance(data, dict) else (torch.stack(data).to(device) if isinstance(data, list) else data.to(device))
-    #                          if not isinstance(data, str) else data
 )
 
 # Start training
